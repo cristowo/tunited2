@@ -1,0 +1,30 @@
+[33mcommit f7c03c439c3d02d4201aa9ba271e9306de215457[m[33m ([m[1;36mHEAD -> [m[1;32mmain[m[33m)[m
+Author: Cristowo <cristobal.marchant@usach.cl>
+Date:   Fri Jun 19 02:49:01 2026 -0400
+
+    Landing editable, 2FA, página 404 y eventos de embudo
+    
+    Contenido del landing:
+    - Panel admin (/admin/contenido) para editar hero, servicios, portafolio
+      y contacto sin tocar código
+    - Subida de imágenes con reescritura vía sharp (valida píxeles reales,
+      no solo el Content-Type declarado) y nombre de archivo aleatorio
+    - Landing público lee el contenido vía GET /content (sin auth)
+    
+    Seguridad:
+    - 2FA (TOTP) opcional para admins: setup/enable/disable y login en dos
+      pasos; /2fa/disable exige reconfirmar la contraseña
+    - INTERNAL_AUTH_SECRET: firma HMAC entre api-gateway y main-service para
+      rutas /admin, así main-service no confía ciegamente en x-user-role si
+      lo alcanzan directo sin pasar por el gateway
+    - Gateway deja de parsear el body en el proxy (consumía el stream antes
+      de reenviarlo y colgaba la request sin error visible)
+    
+    Cotizador y UX:
+    - Página 404 para rutas desconocidas + robots.txt
+    - Borrador del formulario y sesión de embudo movidos de localStorage a
+      sessionStorage
+    - Tracking de embudo (paso visto / enviado) para medir abandono, visible
+      como métricas en el panel admin
+    
+    Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>

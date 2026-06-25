@@ -1,0 +1,22 @@
+# ============================================================
+# Override de DESARROLLO — expone los puertos de la infraestructura
+# al host para poder correr los servicios Node con `npm run dev`.
+#
+# Uso (solo infraestructura, sin los servicios de aplicación):
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres rabbitmq redis
+#
+# NUNCA usar este archivo en producción.
+# ============================================================
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+
+  rabbitmq:
+    ports:
+      - "5672:5672"
+      - "15672:15672"   # UI de administración: http://localhost:15672
+
+  redis:
+    ports:
+      - "6379:6379"

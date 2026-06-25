@@ -1,0 +1,177 @@
+services:
+
+  # ── Infraestructura ──────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Usado por db/init/00-create-app-role.sh para crear el rol app_service
+      POSTGRES_APP_SERVICE_PASSWORD: ${POSTGRES_APP_SERVICE_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    # Puerto NO expuesto al host — solo accesible dentro de la red interna
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    # Puertos NO expuestos al host — solo accesibles dentro de la red interna
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-changeme}
+    volumes:
+      - redis_data:/data
+    # Puerto NO expuesto al host
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-changeme}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Servicios de aplicación ──────────────────────────────────────────────────
+
+  auth-service:
+    build:
+      context: ./auth-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  main-service:
+    build:
+      context: ./main-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production   # activa la verificación obligatoria de reCAPTCHA
+      POSTGRES_HOST: postgres
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
+      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme}@redis:6379
+    volumes:
+      - uploads_data:/app/uploads
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3002/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # Worker de emails — consume eventos de RabbitMQ (misma imagen que main-service)
+  email-worker:
+    build:
+      context: ./main-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672
+    command: ["node", "dist/workers/emailWorker.js"]
+    networks:
+      - internal
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      AUTH_SERVICE_URL: http://auth-service:3001
+      MAIN_SERVICE_URL: http://main-service:3002
+      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme}@redis:6379
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost}
+    # Puerto NO expuesto al host — solo accesible vía el proxy de nginx
+    # (frontend, :80). Publicarlo directo permitiría a un cliente externo
+    # saltarse nginx y llegar al gateway sin que haya un proxy real delante,
+    # rompiendo el supuesto de `trust proxy: 1` (ver TRUST_PROXY_HOPS) y
+    # habilitando bypass del rate limiting falsificando X-Forwarded-For.
+    networks:
+      - internal
+    depends_on:
+      redis:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+      main-service:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_RECAPTCHA_SITE_KEY: ${VITE_RECAPTCHA_SITE_KEY}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    networks:
+      - internal
+    depends_on:
+      - api-gateway
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
+  redis_data:
+  uploads_data:
+
+networks:
+  internal:
+    driver: bridge
